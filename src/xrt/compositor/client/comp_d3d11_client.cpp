@@ -44,12 +44,17 @@
 #include <string.h>
 #include <chrono>
 
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
 using namespace std::chrono_literals;
 using namespace std::chrono;
 
 using xrt::compositor::client::unique_swapchain_ref;
 
 DEBUG_GET_ONCE_LOG_OPTION(log, "D3D_COMPOSITOR_LOG", U_LOGGING_INFO)
+DEBUG_GET_ONCE_BOOL_OPTION(d3d11_dump_eyes, "XRT_D3D11_DUMP_EYES", true)
 
 /*!
  * Spew level logging.
@@ -297,10 +302,66 @@ client_d3d11_swapchain_barrier_image(struct xrt_swapchain *xsc, enum xrt_barrier
 	return XRT_SUCCESS;
 }
 
+static void
+dump_d3d11_swapchain_image(struct client_d3d11_swapchain *sc, uint32_t index)
+{
+	static uint32_t dump_index = 0;
+	dump_index++;
+
+	struct client_d3d11_compositor *c = sc->c;
+	ID3D11Texture2D *src_tex = sc->base.images[index];
+	if (src_tex == nullptr) {
+		return;
+	}
+
+	D3D11_TEXTURE2D_DESC desc = {};
+	src_tex->GetDesc(&desc);
+
+	// Only handle single-sample 4-bytes-per-pixel formats for now.
+	if (desc.SampleDesc.Count > 1) {
+		return;
+	}
+
+	D3D11_TEXTURE2D_DESC staging_desc = desc;
+	staging_desc.MipLevels = 1;
+	staging_desc.ArraySize = 1;
+	staging_desc.Usage = D3D11_USAGE_STAGING;
+	staging_desc.BindFlags = 0;
+	staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	staging_desc.MiscFlags = 0;
+
+	wil::com_ptr<ID3D11Texture2D> staging_tex;
+	if (FAILED(c->app_device->CreateTexture2D(&staging_desc, nullptr, staging_tex.put()))) {
+		return;
+	}
+
+	D3D11_BOX src_box = {0, 0, 0, desc.Width, desc.Height, 1};
+	c->app_context->CopySubresourceRegion(staging_tex.get(), 0, 0, 0, 0, src_tex, 0, &src_box);
+
+	D3D11_MAPPED_SUBRESOURCE mapped = {};
+	if (FAILED(c->app_context->Map(staging_tex.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+		return;
+	}
+
+	char filename[256];
+	snprintf(filename, sizeof(filename), "D:\\openxr\\dump\\eye_d3d11_%06u.png", dump_index);
+	stbi_write_png(filename, (int)desc.Width, (int)desc.Height, 4, mapped.pData, (int)mapped.RowPitch);
+
+	c->app_context->Unmap(staging_tex.get(), 0);
+}
+
+
 static xrt_result_t
 client_d3d11_swapchain_release_image(struct xrt_swapchain *xsc, uint32_t index)
 {
 	struct client_d3d11_swapchain *sc = as_client_d3d11_swapchain(xsc);
+
+	if (debug_get_bool_option_d3d11_dump_eyes()) {
+		try {
+			dump_d3d11_swapchain_image(sc, index);
+		} catch (...) {
+		}
+	}
 
 	// Pipe down call into imported swapchain in native compositor.
 	xrt_result_t xret = xrt_swapchain_release_image(sc->xsc.get(), index);

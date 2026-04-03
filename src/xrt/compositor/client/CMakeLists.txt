@@ -65,6 +65,7 @@ if(XRT_HAVE_D3D11)
 	target_sources(
 		comp_client PRIVATE comp_d3d11_client.cpp comp_d3d11_client.h comp_d3d11_glue.c
 		)
+	target_link_libraries(comp_client PRIVATE xrt-external-stb)
 endif()
 
 if(XRT_HAVE_D3D12)
